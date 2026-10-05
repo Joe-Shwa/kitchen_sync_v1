@@ -109,17 +109,26 @@ input:checked + .slider:before{transform:translateX(18px);}
   <!-- ============ RECIPES TAB ============ -->
   <div id="tab-recipes">
     <div class="card">
+      <div class="card-title">📥 Add a recipe</div>
+      <div class="btn-row">
+        <button class="btn btn-secondary" onclick="openRecipeEditor()">✍️ Write my own</button>
+        <button class="btn btn-secondary" onclick="openImportModal()">📥 Import</button>
+      </div>
+    </div>
+
+    <div class="card">
       <div class="card-title">🔎 Filter</div>
       <div class="muted" style="margin-bottom:8px;">Tap to filter — tap again to clear.</div>
       <div id="filter-protein" class="chip-row"></div>
       <div id="filter-meal" class="chip-row"></div>
       <div id="filter-season" class="chip-row"></div>
       <div id="filter-style" class="chip-row"></div>
-      <div class="btn-row" style="margin-top:6px;">
-        <button class="btn btn-secondary btn-sm" onclick="clearFilters()">Clear filters</button>
-        <button class="btn btn-accent btn-sm" onclick="feedMe()">🎲 Let Claude feed me</button>
-      </div>
+      <div id="filter-source" class="chip-row"></div>
+      <button class="btn btn-secondary btn-sm" onclick="clearFilters()">Clear filters</button>
     </div>
+
+    <button class="btn btn-accent" onclick="openFeedModal()">🎲 What should I eat?</button>
+    <div style="height:12px"></div>
 
     <div id="recipe-list"></div>
   </div>
@@ -183,6 +192,16 @@ input:checked + .slider:before{transform:translateX(18px);}
     </div>
 
     <div class="form-group">
+      <div class="input-label">Source (optional)</div>
+      <input class="input-field" id="re-source" list="source-list" placeholder="e.g. RecipeTin Eats, Marion's Kitchen, Mine, Instagram @handle">
+      <datalist id="source-list"></datalist>
+    </div>
+
+    <div id="import-allergen-note" class="hidden" style="background:var(--danger-bg); color:var(--danger); border-radius:10px; padding:10px 12px; font-size:12.5px; margin-bottom:12px;">
+      ⚠️ Imported from outside the app — double-check the ingredients and tick any allergens below before trusting Feed Me or filters with this one.
+    </div>
+
+    <div class="form-group">
       <div class="input-label">Protein</div>
       <div id="re-protein" class="chip-row"></div>
     </div>
@@ -234,7 +253,8 @@ input:checked + .slider:before{transform:translateX(18px);}
       <button class="icon-btn" onclick="closeModal('view-modal')">✕</button>
     </div>
     <div id="rv-meta" class="recipe-meta"></div>
-    <div class="muted" id="rv-servings" style="margin-bottom:10px;"></div>
+    <div class="muted" id="rv-servings"></div>
+    <div class="muted" id="rv-source" style="margin-bottom:10px;"></div>
     <div class="card-title" style="margin-top:6px;">Ingredients</div>
     <div id="rv-ingredients"></div>
     <div class="card-title" style="margin-top:14px;">Method</div>
@@ -269,6 +289,26 @@ input:checked + .slider:before{transform:translateX(18px);}
       </div>
     </div>
     <div class="card">
+      <div class="card-title">🤖 AI features (optional)</div>
+      <div class="muted" style="margin-bottom:10px;">Powers recipe import (link/text/photo) and AI-invented meal ideas. Reuses the same Cloudflare Worker setup as your other tracker apps. These only work once Kitchen Sync is hosted at your GitHub Pages address — not when opened as a local file — because the Workers only accept requests from that origin. Your key is stored on this device only, never uploaded anywhere else.</div>
+      <div class="form-group">
+        <div class="input-label">AI Worker URL</div>
+        <input class="input-field" id="settings-ai-url" placeholder="https://josh-tracker-proxy.joe-shwa-smith.workers.dev">
+      </div>
+      <div class="form-group">
+        <div class="input-label">Shared key (X-App-Key)</div>
+        <input class="input-field" id="settings-ai-key" placeholder="same key your other trackers use">
+      </div>
+      <div class="form-group">
+        <div class="input-label">Recipe Fetch Worker URL (for link import)</div>
+        <input class="input-field" id="settings-fetch-url" placeholder="https://your-recipe-fetch-worker.workers.dev">
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-secondary" onclick="saveSettings(); toast('✅ Saved')">Save</button>
+        <button class="btn btn-secondary" onclick="testAiConnection()">🔌 Test connection</button>
+      </div>
+    </div>
+    <div class="card">
       <div class="card-title">💾 Backup</div>
       <div class="muted" style="margin-bottom:10px;">This app stores everything on this device only for now — no account sync yet. Export a backup before switching phones or clearing browser data.</div>
       <div class="btn-row">
@@ -277,6 +317,69 @@ input:checked + .slider:before{transform:translateX(18px);}
       </div>
       <input type="file" id="import-file" accept="application/json" class="hidden" onchange="importData(event)">
     </div>
+  </div>
+</div>
+
+<!-- ============ IMPORT MODAL ============ -->
+<div class="modal-bg" id="import-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Import a recipe</h2>
+      <button class="icon-btn" onclick="closeModal('import-modal')">✕</button>
+    </div>
+    <div class="chip-row">
+      <button type="button" class="chip active" id="import-tab-link" onclick="switchImportTab('link')">🔗 Link</button>
+      <button type="button" class="chip" id="import-tab-text" onclick="switchImportTab('text')">📋 Paste text</button>
+      <button type="button" class="chip" id="import-tab-photo" onclick="switchImportTab('photo')">📷 Photo</button>
+    </div>
+
+    <div id="import-panel-link">
+      <div class="muted" style="margin-bottom:8px;">Paste a link from RecipeTin Eats or similar. Tries to read it directly first; falls back to AI extraction if the page doesn't cooperate.</div>
+      <div class="form-group"><input class="input-field" id="import-url" placeholder="https://..."></div>
+      <button class="btn btn-primary" onclick="importFromUrl()">Fetch recipe</button>
+    </div>
+
+    <div id="import-panel-text" class="hidden">
+      <div class="muted" style="margin-bottom:8px;">Paste an Instagram/Facebook caption, a copied recipe, or any block of text describing it.</div>
+      <div class="form-group"><textarea id="import-text" style="min-height:140px;" placeholder="Paste the recipe text here..."></textarea></div>
+      <button class="btn btn-primary" onclick="importFromText()">Extract recipe</button>
+    </div>
+
+    <div id="import-panel-photo" class="hidden">
+      <div class="muted" style="margin-bottom:8px;">Screenshot of a saved Insta/FB post, or a photo of a recipe card/book page.</div>
+      <input type="file" id="import-photo-camera" accept="image/*" capture="environment" class="hidden" onchange="importFromPhoto(event)">
+      <input type="file" id="import-photo-gallery" accept="image/*" class="hidden" onchange="importFromPhoto(event)">
+      <div class="btn-row">
+        <button class="btn btn-secondary" onclick="document.getElementById('import-photo-camera').click()">📷 Take photo</button>
+        <button class="btn btn-secondary" onclick="document.getElementById('import-photo-gallery').click()">🖼️ From gallery</button>
+      </div>
+    </div>
+
+    <div id="import-status" class="hidden" style="text-align:center; padding:16px; color:var(--muted);">Reading…</div>
+  </div>
+</div>
+
+<!-- ============ FEED ME MODAL ============ -->
+<div class="modal-bg" id="feed-modal">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>🎲 What should I eat?</h2>
+      <button class="icon-btn" onclick="closeModal('feed-modal')">✕</button>
+    </div>
+    <div class="muted" style="margin-bottom:4px;">From your recipes (respects your current filters and allergy settings).</div>
+
+    <div class="card-title" style="margin-top:10px;">🥪 Lunch</div>
+    <div id="feed-lunch"></div>
+    <div class="card-title" style="margin-top:14px;">🍽️ Dinner</div>
+    <div id="feed-dinner"></div>
+    <button class="btn btn-secondary btn-sm" style="margin-top:10px;" onclick="renderFeedSuggestions()">🔄 Shuffle</button>
+
+    <div style="border-top:1px solid var(--border); margin:18px 0 14px;"></div>
+
+    <div class="card-title">🤖 Or, something new</div>
+    <div class="muted" style="margin-bottom:8px;">Claude invents an idea on the spot — uses your current filters and always avoids your Settings allergy list, but double-check before cooking.</div>
+    <button class="btn btn-accent" onclick="inventRecipe()">✨ Invent an idea</button>
+    <div id="invent-result"></div>
   </div>
 </div>
 
@@ -305,7 +408,7 @@ const STORE_KEY = 'recipe_box_v1';
 let S = loadState();
 let currentEditId = null;
 let currentViewId = null;
-let filters = {protein:[], meal:[], season:[], style:[]};
+let filters = {protein:[], meal:[], season:[], style:[], source:[]};
 let editorTags = {protein:[], meal:[], season:[], style:[], allergen:[]};
 
 function loadState(){
@@ -313,7 +416,7 @@ function loadState(){
     const raw = localStorage.getItem(STORE_KEY);
     if(raw) return JSON.parse(raw);
   }catch(e){}
-  return {recipes:[], thisWeek:[], grocery:{items:[]}, settings:{avoidAllergens:[], showAll:false}};
+  return {recipes:[], thisWeek:[], grocery:{items:[]}, settings:{avoidAllergens:[], showAll:false, aiUrl:'', aiKey:'', fetchUrl:''}};
 }
 function saveState(){
   try{ localStorage.setItem(STORE_KEY, JSON.stringify(S)); }
@@ -361,8 +464,10 @@ function renderFilters(){
   renderChipRow('filter-meal', MEAL, filters.meal, ()=>{renderFilters();renderRecipeList();});
   renderChipRow('filter-season', SEASON, filters.season, ()=>{renderFilters();renderRecipeList();});
   renderChipRow('filter-style', STYLE, filters.style, ()=>{renderFilters();renderRecipeList();});
+  const sources = [...new Set(S.recipes.map(r=>r.source).filter(Boolean))].sort();
+  renderChipRow('filter-source', sources, filters.source, ()=>{renderFilters();renderRecipeList();});
 }
-function clearFilters(){ filters={protein:[],meal:[],season:[],style:[]}; renderFilters(); renderRecipeList(); }
+function clearFilters(){ filters={protein:[],meal:[],season:[],style:[],source:[]}; renderFilters(); renderRecipeList(); }
 
 function isAllergySafe(r){
   if(S.settings.showAll) return true;
@@ -375,7 +480,23 @@ function matchesFilters(r){
   for(const axis of ['protein','meal','season','style']){
     if(filters[axis].length && !filters[axis].some(v=>(r[axis]||[]).includes(v))) return false;
   }
+  if(filters.source.length && !filters.source.includes(r.source)) return false;
   return true;
+}
+// Same as matchesFilters but ignores the meal axis — used by the Feed Me modal,
+// which splits results into Lunch/Dinner itself regardless of any meal filter set.
+function matchesFiltersExceptMeal(r){
+  if(!isAllergySafe(r)) return false;
+  for(const axis of ['protein','season','style']){
+    if(filters[axis].length && !filters[axis].some(v=>(r[axis]||[]).includes(v))) return false;
+  }
+  if(filters.source.length && !filters.source.includes(r.source)) return false;
+  return true;
+}
+function shuffleArr(arr){
+  const a = [...arr];
+  for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; }
+  return a;
 }
 
 // ─── RECIPE LIST ────────────────────────────────────────────────────────────
@@ -397,6 +518,7 @@ function renderRecipeList(){
       ...(r.meal||[]).map(t=>`<span class="tag">${esc(t)}</span>`),
       ...(r.season||[]).map(t=>t!=='Any'?`<span class="tag">${esc(t)}</span>`:''),
       ...(r.style||[]).map(t=>`<span class="tag">${esc(t)}</span>`),
+      ...(r.source?[`<span class="tag">📖 ${esc(r.source)}</span>`]:[]),
       ...(r.allergens||[]).map(t=>`<span class="tag allergen">⚠ ${esc(t)}</span>`),
     ].join('');
     return `<div class="card recipe-card" onclick="viewRecipe('${r.id}')">
@@ -407,13 +529,27 @@ function renderRecipeList(){
   }).join('');
 }
 
-// ─── FEED ME ────────────────────────────────────────────────────────────────
-function feedMe(){
-  const pool = S.recipes.filter(isAllergySafe);
-  if(!pool.length){ toast('No safe recipes to pick from yet — add some first'); return; }
-  const pick = pool[Math.floor(Math.random()*pool.length)];
-  viewRecipe(pick.id);
-  toast('🎲 Claude picked: '+pick.name);
+// ─── FEED ME (multi-suggestion modal) ───────────────────────────────────────
+function openFeedModal(){
+  document.getElementById('invent-result').innerHTML = '';
+  renderFeedSuggestions();
+  openModal('feed-modal');
+}
+function renderFeedCard(r){
+  return `<div class="card recipe-card" style="margin-bottom:8px;" onclick="closeModal('feed-modal');viewRecipe('${r.id}')">
+    <div class="recipe-title" style="font-size:14.5px;">${esc(r.name)}</div>
+  </div>`;
+}
+function renderFeedSuggestions(){
+  const pool = S.recipes.filter(matchesFiltersExceptMeal);
+  const lunchPool = shuffleArr(pool.filter(r=>(r.meal||[]).includes('Lunch')));
+  const dinnerPool = shuffleArr(pool.filter(r=>(r.meal||[]).includes('Dinner')));
+  document.getElementById('feed-lunch').innerHTML = lunchPool.length
+    ? lunchPool.slice(0,3).map(renderFeedCard).join('')
+    : '<div class="muted">No safe/matching lunch recipes tagged yet.</div>';
+  document.getElementById('feed-dinner').innerHTML = dinnerPool.length
+    ? dinnerPool.slice(0,3).map(renderFeedCard).join('')
+    : '<div class="muted">No safe/matching dinner recipes tagged yet.</div>';
 }
 
 // ─── RECIPE VIEW ────────────────────────────────────────────────────────────
@@ -422,6 +558,7 @@ function viewRecipe(id){
   currentViewId = id;
   document.getElementById('rv-title').textContent = r.name;
   document.getElementById('rv-servings').textContent = r.servings? 'Serves '+r.servings : '';
+  document.getElementById('rv-source').textContent = r.source? 'From: '+r.source : '';
   const tags = [
     ...(r.protein||[]).map(t=>`<span class="tag protein">${esc(t)}</span>`),
     ...(r.meal||[]).map(t=>`<span class="tag">${esc(t)}</span>`),
@@ -459,8 +596,11 @@ function openRecipeEditor(id){
   document.getElementById('re-delete').classList.toggle('hidden', !r);
   document.getElementById('re-name').value = r ? r.name : '';
   document.getElementById('re-servings').value = r ? (r.servings||'') : '';
+  document.getElementById('re-source').value = r ? (r.source||'') : '';
   document.getElementById('re-steps').value = r ? (r.steps||'') : '';
   document.getElementById('re-notes').value = r ? (r.notes||'') : '';
+  document.getElementById('import-allergen-note').classList.add('hidden');
+  populateSourceList();
 
   editorTags = {
     protein: r ? [...(r.protein||[])] : [],
@@ -497,6 +637,11 @@ function addIngredientRow(ing){
   wrap.appendChild(row);
 }
 
+function populateSourceList(){
+  const sources = [...new Set(S.recipes.map(r=>r.source).filter(Boolean))].sort();
+  document.getElementById('source-list').innerHTML = sources.map(s=>`<option value="${esc(s)}">`).join('');
+}
+
 function guessCategory(name){
   const n = name.toLowerCase();
   for(const cat of Object.keys(CAT_KEYWORDS)){
@@ -523,6 +668,7 @@ function saveRecipe(){
   const data = {
     name,
     servings: document.getElementById('re-servings').value.trim(),
+    source: document.getElementById('re-source').value.trim(),
     protein: [...editorTags.protein],
     meal: [...editorTags.meal],
     season: [...editorTags.season],
@@ -543,6 +689,7 @@ function saveRecipe(){
   }
   saveState();
   closeModal('recipe-modal');
+  renderFilters();
   renderRecipeList();
   toast('✅ Saved "'+name+'"');
 }
@@ -554,6 +701,7 @@ function deleteRecipe(){
   S.thisWeek = S.thisWeek.filter(id=>id!==currentEditId);
   saveState();
   closeModal('recipe-modal');
+  renderFilters();
   renderRecipeList();
   toast('Deleted');
 }
@@ -684,13 +832,218 @@ function copyList(){
 
 // ─── SETTINGS ───────────────────────────────────────────────────────────────
 function renderSettings(){
-  renderChipRow('settings-allergens', ALLERGENS, S.settings.avoidAllergens, saveSettings, true);
+  renderChipRow('settings-allergens', ALLERGENS, S.settings.avoidAllergens, onAllergenSettingToggle, true);
   document.getElementById('settings-showall').checked = !!S.settings.showAll;
+  document.getElementById('settings-ai-url').value = S.settings.aiUrl || '';
+  document.getElementById('settings-ai-key').value = S.settings.aiKey || '';
+  document.getElementById('settings-fetch-url').value = S.settings.fetchUrl || '';
+}
+// renderChipRow mutates S.settings.avoidAllergens in place but doesn't touch the
+// chip's own active/inactive styling — re-render the row so the tap is reflected
+// immediately instead of only after the modal is closed and reopened.
+function onAllergenSettingToggle(){
+  saveState();
+  renderSettings();
+  renderRecipeList();
 }
 function saveSettings(){
   S.settings.showAll = document.getElementById('settings-showall').checked;
+  S.settings.aiUrl = document.getElementById('settings-ai-url').value.trim();
+  S.settings.aiKey = document.getElementById('settings-ai-key').value.trim();
+  S.settings.fetchUrl = document.getElementById('settings-fetch-url').value.trim();
   saveState();
   renderRecipeList();
+}
+function aiConfigured(){ return !!(S.settings.aiUrl && S.settings.aiKey); }
+
+// ─── AI PLUMBING (reuses the same Cloudflare Worker + shared-key pattern as the other tracker apps) ──
+async function callAI(content, maxTokens){
+  const resp = await fetch(S.settings.aiUrl, {
+    method:'POST',
+    headers:{'Content-Type':'application/json','X-App-Key':S.settings.aiKey},
+    body: JSON.stringify({model:'claude-sonnet-4-6', max_tokens:maxTokens||1200, messages:[{role:'user', content}]})
+  });
+  const data = await resp.json();
+  if(data.error) throw new Error(typeof data.error==='string' ? data.error : (data.error.message||'AI request failed'));
+  const text = (data.content||[]).filter(c=>c.type==='text').map(c=>c.text).join('');
+  if(!text) throw new Error('empty response');
+  return text;
+}
+function parseAiJson(text){
+  const clean = text.replace(/```json\n?|```/g,'').trim();
+  return JSON.parse(clean);
+}
+const RECIPE_JSON_SHAPE = `Return ONLY valid JSON, no other text, in exactly this shape:
+{"name":"","servings":"","source":"","ingredients":[{"name":"","qty":"","unit":""}],"steps":"1. ...\\n2. ...","suggestedProtein":[],"suggestedMeal":[],"suggestedSeason":[],"suggestedStyle":[]}
+Rules: suggestedProtein values must only be from [Chicken, Fish, Pork, Lamb, Beef, Vegetarian, Other]. suggestedMeal from [Lunch, Dinner]. suggestedSeason from [Summer, Winter, Any]. suggestedStyle from [Hearty, Salad, Soup, Other]. If a field is unclear, leave it as an empty string or empty array — do not guess wildly. Do not include allergen information; that is deliberately left for the person to check themselves.`;
+
+async function extractRecipeFromText(text){
+  const content = 'Extract a recipe from the following text (it may be a webpage dump or a social media caption).\n\n'+RECIPE_JSON_SHAPE+'\n\nTEXT:\n'+text;
+  return parseAiJson(await callAI(content, 1200));
+}
+async function extractRecipeFromImage(base64, mediaType){
+  const content = [
+    {type:'image', source:{type:'base64', media_type:mediaType, data:base64}},
+    {type:'text', text:'Extract a recipe from the image above — it may be a screenshot of a social media post/reel, or a photo of a recipe card/book page.\n\n'+RECIPE_JSON_SHAPE}
+  ];
+  return parseAiJson(await callAI(content, 1200));
+}
+async function testAiConnection(){
+  if(!aiConfigured()){ toast('Fill in the AI Worker URL and key first'); return; }
+  toast('Testing…');
+  try{
+    const raw = await callAI('Reply with only the single word: OK', 20);
+    if(raw.trim().toUpperCase().includes('OK')) toast('✅ AI worker responding correctly');
+    else toast('⚠️ Got an odd response: '+raw.slice(0,60));
+  }catch(e){
+    toast('⚠️ Connection failed: '+e.message);
+  }
+}
+function guessSourceFromUrl(url){
+  try{ return new URL(url).hostname.replace(/^www\./,''); }catch(e){ return ''; }
+}
+
+// ─── IMPORT ─────────────────────────────────────────────────────────────────
+function openImportModal(){
+  document.getElementById('import-url').value = '';
+  document.getElementById('import-text').value = '';
+  switchImportTab('link');
+  setImportStatus(null);
+  openModal('import-modal');
+}
+function switchImportTab(mode){
+  ['link','text','photo'].forEach(m=>{
+    document.getElementById('import-tab-'+m).classList.toggle('active', m===mode);
+    document.getElementById('import-panel-'+m).classList.toggle('hidden', m!==mode);
+  });
+}
+function setImportStatus(msg){
+  const el = document.getElementById('import-status');
+  if(msg){ el.textContent = msg; el.classList.remove('hidden'); }
+  else el.classList.add('hidden');
+}
+
+async function importFromUrl(){
+  const url = document.getElementById('import-url').value.trim();
+  if(!url){ toast('Paste a link first'); return; }
+  if(!S.settings.fetchUrl){ toast('Add your Recipe Fetch Worker URL in Settings first'); return; }
+  setImportStatus('Fetching…');
+  try{
+    const resp = await fetch(S.settings.fetchUrl, {
+      method:'POST',
+      headers:{'Content-Type':'application/json','X-App-Key':S.settings.aiKey},
+      body: JSON.stringify({url})
+    });
+    const data = await resp.json();
+    if(data.error) throw new Error(data.error);
+    if(data.found){
+      applyImportedRecipe({
+        name:data.recipe.name, servings:data.recipe.servings, source:data.recipe.source||guessSourceFromUrl(url),
+        ingredients:data.recipe.ingredients||[], steps:data.recipe.steps,
+        suggestedProtein:[], suggestedMeal:[], suggestedSeason:[], suggestedStyle:[]
+      });
+    } else {
+      if(!aiConfigured()){ toast("Couldn't read that page directly, and AI extraction isn't set up — add your AI Worker in Settings"); setImportStatus(null); return; }
+      setImportStatus('No recipe markup found — asking Claude to read it instead…');
+      const parsed = await extractRecipeFromText(data.text);
+      parsed.source = parsed.source || guessSourceFromUrl(url);
+      applyImportedRecipe(parsed);
+    }
+  }catch(e){
+    toast('⚠️ Import failed: '+e.message);
+    setImportStatus(null);
+  }
+}
+async function importFromText(){
+  const text = document.getElementById('import-text').value.trim();
+  if(!text){ toast('Paste some recipe text first'); return; }
+  if(!aiConfigured()){ toast('Add your AI Worker URL + key in Settings first'); return; }
+  setImportStatus('Reading…');
+  try{
+    applyImportedRecipe(await extractRecipeFromText(text));
+  }catch(e){
+    toast('⚠️ Could not extract a recipe: '+e.message);
+    setImportStatus(null);
+  }
+}
+function importFromPhoto(ev){
+  const file = ev.target.files[0]; if(!file) return;
+  if(!aiConfigured()){ toast('Add your AI Worker URL + key in Settings first'); ev.target.value=''; return; }
+  const reader = new FileReader();
+  reader.onload = async ()=>{
+    setImportStatus('Reading photo…');
+    try{
+      const base64 = reader.result.split(',')[1];
+      applyImportedRecipe(await extractRecipeFromImage(base64, file.type));
+    }catch(e){
+      toast('⚠️ Could not read that photo: '+e.message);
+      setImportStatus(null);
+    }
+  };
+  reader.readAsDataURL(file);
+  ev.target.value = '';
+}
+function applyImportedRecipe(data){
+  closeModal('import-modal');
+  closeModal('feed-modal');
+  setImportStatus(null);
+  openRecipeEditor();
+  document.getElementById('re-name').value = data.name || '';
+  document.getElementById('re-servings').value = data.servings || '';
+  document.getElementById('re-source').value = data.source || '';
+  document.getElementById('re-steps').value = data.steps || '';
+  document.getElementById('import-allergen-note').classList.remove('hidden');
+
+  const ingWrap = document.getElementById('re-ingredients');
+  ingWrap.innerHTML = '';
+  const rawIngs = (data.ingredients && data.ingredients.length) ? data.ingredients : [{name:'',qty:'',unit:''}];
+  const ings = rawIngs.map(i=>({name:i.name||'', qty:i.qty||'', unit:i.unit||'', category:guessCategory(i.name||'')}));
+  ings.forEach(ing=>addIngredientRow(ing));
+
+  editorTags.protein = (data.suggestedProtein||[]).filter(v=>PROTEIN.includes(v));
+  editorTags.meal = (data.suggestedMeal||[]).filter(v=>MEAL.includes(v));
+  editorTags.season = (data.suggestedSeason||[]).filter(v=>SEASON.includes(v));
+  editorTags.style = (data.suggestedStyle||[]).filter(v=>STYLE.includes(v));
+  renderChipRow('re-protein', PROTEIN, editorTags.protein, ()=>{});
+  renderChipRow('re-meal', MEAL, editorTags.meal, ()=>{});
+  renderChipRow('re-season', SEASON, editorTags.season, ()=>{});
+  renderChipRow('re-style', STYLE, editorTags.style, ()=>{});
+
+  toast('📥 Imported — review and save');
+}
+
+// ─── INVENT (AI-generated new idea, not from the library) ──────────────────
+let lastInvented = null;
+async function inventRecipe(){
+  if(!aiConfigured()){ toast('Add your AI Worker URL + key in Settings first'); return; }
+  const el = document.getElementById('invent-result');
+  el.innerHTML = '<div class="muted" style="padding:10px 0;">Thinking…</div>';
+  const constraints = [];
+  if(filters.protein.length) constraints.push('protein should be one of: '+filters.protein.join(', '));
+  if(filters.season.length) constraints.push('season: '+filters.season.join(', '));
+  if(filters.style.length) constraints.push('style: '+filters.style.join(', '));
+  if((S.settings.avoidAllergens||[]).length) constraints.push('MUST NOT contain any of these allergens: '+S.settings.avoidAllergens.join(', '));
+  const prompt = 'Invent one realistic, cookable-at-home recipe idea (not something extremely famous/obvious) for lunch or dinner.'
+    + (constraints.length? ' Constraints: '+constraints.join('; ')+'.' : '')
+    + ' For "source", write: Claude-generated idea.\n\n' + RECIPE_JSON_SHAPE;
+  try{
+    const parsed = parseAiJson(await callAI(prompt, 1200));
+    lastInvented = parsed;
+    el.innerHTML = `<div class="card" style="margin-top:10px;">
+      <div class="recipe-title">${esc(parsed.name||'Untitled idea')}</div>
+      <div class="muted" style="margin:6px 0;">${esc((parsed.ingredients||[]).map(i=>i.name).join(', '))}</div>
+      <div class="btn-row">
+        <button class="btn btn-secondary btn-sm" onclick="inventRecipe()">🎲 Try another</button>
+        <button class="btn btn-primary btn-sm" onclick="saveInventedRecipe()">💾 Save to my recipes</button>
+      </div>
+    </div>`;
+  }catch(e){
+    el.innerHTML = `<div class="muted" style="padding:10px 0;">Couldn't get an idea: ${esc(e.message)}</div>`;
+  }
+}
+function saveInventedRecipe(){
+  if(!lastInvented) return;
+  applyImportedRecipe(lastInvented);
 }
 function exportData(){
   const blob = new Blob([JSON.stringify(S,null,2)], {type:'application/json'});
@@ -711,7 +1064,12 @@ function importData(ev){
       if(!confirm('Import will replace everything currently in this app on this device. Continue?')) return;
       S = data;
       S.grocery = S.grocery || {items:[]};
-      S.settings = S.settings || {avoidAllergens:[], showAll:false};
+      S.settings = S.settings || {};
+      S.settings.avoidAllergens = S.settings.avoidAllergens || [];
+      S.settings.showAll = !!S.settings.showAll;
+      S.settings.aiUrl = S.settings.aiUrl || '';
+      S.settings.aiKey = S.settings.aiKey || '';
+      S.settings.fetchUrl = S.settings.fetchUrl || '';
       S.thisWeek = S.thisWeek || [];
       saveState();
       renderFilters(); renderRecipeList(); renderSettings();
