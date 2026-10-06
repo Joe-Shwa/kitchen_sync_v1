@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Kitchen Sync</title>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
 :root{
   --bg:#FAF7F2; --card:#FFFFFF; --text:#2B2420; --muted:#8A7F73; --border:#EAE3DA;
@@ -95,6 +96,12 @@ textarea{resize:vertical; min-height:80px;}
 .slider:before{content:""; position:absolute; width:18px; height:18px; left:3px; top:3px; background:#fff; border-radius:50%; transition:.2s;}
 input:checked + .slider{background:var(--accent);}
 input:checked + .slider:before{transform:translateX(18px);}
+
+.sync-dot{width:9px; height:9px; border-radius:50%; background:var(--muted); flex:0 0 auto;}
+.sync-dot.synced{background:var(--accent);}
+.sync-dot.syncing{background:#D9A441; animation:pulse 1s infinite;}
+.sync-dot.err{background:var(--danger);}
+@keyframes pulse{0%,100%{opacity:1;}50%{opacity:.4;}}
 </style>
 </head>
 <body>
@@ -278,6 +285,25 @@ input:checked + .slider:before{transform:translateX(18px);}
       <button class="icon-btn" onclick="closeModal('settings-modal')">✕</button>
     </div>
     <div class="card">
+      <div class="card-title">🔄 Sync (shared with Lauren)</div>
+      <div class="muted" style="margin-bottom:10px;">Paste the link to your shared Google Sheet, connect your Google account, and your recipes, grocery list and This Week picks stay in sync with anyone else using the same sheet. Only works once this is hosted at your GitHub Pages address, same as the AI features below.</div>
+      <div class="form-group">
+        <div class="input-label">Shared Google Sheet link</div>
+        <input class="input-field" id="settings-sheet-link" placeholder="https://docs.google.com/spreadsheets/d/...">
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-secondary" onclick="saveSheetLink()">Save link</button>
+        <button class="btn btn-primary" onclick="handleSyncClick()">🔄 Connect &amp; sync</button>
+      </div>
+      <div class="settings-row" style="border-bottom:none; padding-bottom:0;">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span class="sync-dot" id="sync-dot"></span>
+          <span class="muted" id="sync-label">Not connected</span>
+        </div>
+        <button class="btn btn-secondary btn-sm" onclick="disconnectSync()">Disconnect</button>
+      </div>
+    </div>
+    <div class="card">
       <div class="card-title">⚠️ Allergies to avoid</div>
       <div class="muted" style="margin-bottom:8px;">Recipes containing these are hidden by default across the app (Feed Me always respects this). You can still see everything from the Recipes tab by turning "show all" on below.</div>
       <div id="settings-allergens" class="chip-row"></div>
@@ -310,7 +336,7 @@ input:checked + .slider:before{transform:translateX(18px);}
     </div>
     <div class="card">
       <div class="card-title">💾 Backup</div>
-      <div class="muted" style="margin-bottom:10px;">This app stores everything on this device only for now — no account sync yet. Export a backup before switching phones or clearing browser data.</div>
+      <div class="muted" style="margin-bottom:10px;">Local export/import, independent of the Sheet sync above — handy before clearing browser data, or if you want a point-in-time copy.</div>
       <div class="btn-row">
         <button class="btn btn-secondary" onclick="exportData()">⬇️ Export JSON</button>
         <button class="btn btn-secondary" onclick="document.getElementById('import-file').click()">⬆️ Import JSON</button>
@@ -416,11 +442,12 @@ function loadState(){
     const raw = localStorage.getItem(STORE_KEY);
     if(raw) return JSON.parse(raw);
   }catch(e){}
-  return {recipes:[], thisWeek:[], grocery:{items:[]}, settings:{avoidAllergens:[], showAll:false, aiUrl:'', aiKey:'', fetchUrl:''}};
+  return {recipes:[], thisWeek:[], thisWeekUpdatedAt:0, tombstones:[], grocery:{items:[]}, settings:{avoidAllergens:[], showAll:false, aiUrl:'', aiKey:'', fetchUrl:'', sheetId:'', sheetTabsReady:false}};
 }
 function saveState(){
   try{ localStorage.setItem(STORE_KEY, JSON.stringify(S)); }
   catch(e){ toast('⚠️ Could not save — storage may be full'); }
+  scheduleSync();
 }
 function newId(prefix){ return prefix+'_'+Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -584,6 +611,7 @@ function updateWeekBtn(){
 function toggleWeekFromView(){
   const i = S.thisWeek.indexOf(currentViewId);
   if(i>-1) S.thisWeek.splice(i,1); else S.thisWeek.push(currentViewId);
+  S.thisWeekUpdatedAt = Date.now();
   saveState(); updateWeekBtn(); renderRecipeList();
 }
 function editFromView(){ closeModal('view-modal'); openRecipeEditor(currentViewId); }
@@ -697,8 +725,10 @@ function saveRecipe(){
 function deleteRecipe(){
   if(!currentEditId) return;
   if(!confirm("Delete this recipe? This can't be undone.")) return;
+  markDeleted('recipe', currentEditId);
   S.recipes = S.recipes.filter(r=>r.id!==currentEditId);
   S.thisWeek = S.thisWeek.filter(id=>id!==currentEditId);
+  S.thisWeekUpdatedAt = Date.now();
   saveState();
   closeModal('recipe-modal');
   renderFilters();
@@ -724,6 +754,7 @@ function renderWeek(){
 }
 function removeFromWeek(id){
   S.thisWeek = S.thisWeek.filter(x=>x!==id);
+  S.thisWeekUpdatedAt = Date.now();
   saveState(); renderWeek(); renderRecipeList();
 }
 
@@ -742,13 +773,14 @@ function buildGroceryList(){
     (r.ingredients||[]).forEach(ing=>{
       const key = (ing.name.trim().toLowerCase())+'|'+(ing.unit||'');
       if(!merged[key]){
-        merged[key] = {key, name:ing.name.trim(), unit:ing.unit||'', qty: ing.qty||'', category: ing.category||guessCategory(ing.name), fromRecipe:true, sources:[r.name], checked:!!prevChecked[key]};
+        merged[key] = {key, name:ing.name.trim(), unit:ing.unit||'', qty: ing.qty||'', category: ing.category||guessCategory(ing.name), fromRecipe:true, sources:[r.name], checked:!!prevChecked[key], updatedAt:Date.now()};
       } else {
         const existingQty = parseFloat(merged[key].qty);
         const addQty = parseFloat(ing.qty);
         if(!isNaN(existingQty) && !isNaN(addQty)) merged[key].qty = (existingQty+addQty).toString();
         else if(ing.qty) merged[key].qty = merged[key].qty ? merged[key].qty+' + '+ing.qty : ing.qty;
         if(!merged[key].sources.includes(r.name)) merged[key].sources.push(r.name);
+        merged[key].updatedAt = Date.now();
       }
     });
   });
@@ -764,7 +796,7 @@ function addExtraItem(){
   const name = document.getElementById('extra-name').value.trim();
   if(!name) return;
   const qty = document.getElementById('extra-qty').value.trim();
-  S.grocery.items.push({key:newId('extra'), name, qty, unit:'', category:guessCategory(name), fromRecipe:false, sources:[], checked:false});
+  S.grocery.items.push({key:newId('extra'), name, qty, unit:'', category:guessCategory(name), fromRecipe:false, sources:[], checked:false, updatedAt:Date.now()});
   document.getElementById('extra-name').value = '';
   document.getElementById('extra-qty').value = '';
   saveState(); renderGrocery();
@@ -797,13 +829,15 @@ function renderGrocery(){
 }
 function toggleGroceryItem(key){
   const it = S.grocery.items.find(x=>x.key===key); if(!it) return;
-  it.checked = !it.checked; saveState(); renderGrocery();
+  it.checked = !it.checked; it.updatedAt = Date.now(); saveState(); renderGrocery();
 }
 function removeGroceryItem(key){
+  markDeleted('grocery', key);
   S.grocery.items = S.grocery.items.filter(x=>x.key!==key);
   saveState(); renderGrocery();
 }
 function clearChecked(){
+  S.grocery.items.filter(it=>it.checked).forEach(it=>markDeleted('grocery', it.key));
   S.grocery.items = S.grocery.items.filter(it=>!it.checked);
   saveState(); renderGrocery(); toast('Cleared checked items');
 }
@@ -837,6 +871,8 @@ function renderSettings(){
   document.getElementById('settings-ai-url').value = S.settings.aiUrl || '';
   document.getElementById('settings-ai-key').value = S.settings.aiKey || '';
   document.getElementById('settings-fetch-url').value = S.settings.fetchUrl || '';
+  document.getElementById('settings-sheet-link').value = S.settings.sheetId || '';
+  updateSyncUI(syncState);
 }
 // renderChipRow mutates S.settings.avoidAllergens in place but doesn't touch the
 // chip's own active/inactive styling — re-render the row so the tap is reflected
@@ -1070,7 +1106,11 @@ function importData(ev){
       S.settings.aiUrl = S.settings.aiUrl || '';
       S.settings.aiKey = S.settings.aiKey || '';
       S.settings.fetchUrl = S.settings.fetchUrl || '';
+      S.settings.sheetId = S.settings.sheetId || '';
+      S.settings.sheetTabsReady = !!S.settings.sheetTabsReady;
       S.thisWeek = S.thisWeek || [];
+      S.thisWeekUpdatedAt = S.thisWeekUpdatedAt || 0;
+      S.tombstones = S.tombstones || [];
       saveState();
       renderFilters(); renderRecipeList(); renderSettings();
       toast('✅ Imported');
@@ -1080,11 +1120,305 @@ function importData(ev){
   ev.target.value = '';
 }
 
+// ─── SHEET SYNC (shared Google Sheet — Recipes / ShoppingList / Meta tabs) ──
+// Scope is 'spreadsheets' only (read/write Sheets the signed-in account can edit) — not
+// drive.appdata like the personal trackers, because this data has to be visible to and
+// editable by a second Google account (Lauren's), which a private per-account appData
+// store structurally cannot do. Everyone who should sync just points at the same Sheet
+// link, shared with Edit access from Google Sheets itself.
+const GOOGLE_CLIENT_ID = '93450585738-k7hsn3fjsu69sigcktdfftfcsjk91qcu.apps.googleusercontent.com';
+const DRIVE_AUTH_WORKER = 'https://drive-token-worker.joe-shwa-smith.workers.dev';
+const SHEETS_SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
+const DRIVE_TOKEN_KEY='ks_drive_token', DRIVE_REFRESH_KEY='ks_drive_refresh', DRIVE_EXPIRY_KEY='ks_drive_expiry', DRIVE_LINKED_KEY='ks_drive_linked';
+const RECIPE_HEADERS = ['id','name','servings','source','protein','meal','season','style','allergens','ingredients','steps','notes','updatedAt','createdAt'];
+const GROCERY_HEADERS = ['key','name','qty','unit','category','fromRecipe','sources','checked','updatedAt'];
+
+let driveAccessToken = localStorage.getItem(DRIVE_TOKEN_KEY) || null;
+let driveRefreshToken = localStorage.getItem(DRIVE_REFRESH_KEY) || null;
+let driveTokenExpiry = Number(localStorage.getItem(DRIVE_EXPIRY_KEY) || 0);
+let syncState = 'idle'; // idle | syncing | synced | error
+let syncDebounceTimer = null;
+
+function markDeleted(type, id){ if(!S.tombstones) S.tombstones=[]; S.tombstones.push({type, id, deletedAt:Date.now()}); }
+function mergeById(localArr, remoteArr, type, idField){
+  idField = idField || 'id';
+  const tomb = new Set((S.tombstones||[]).filter(t=>t.type===type).map(t=>t.id));
+  const map = {};
+  (localArr||[]).forEach(e=>{ if(e && e[idField]) map[e[idField]] = e; });
+  (remoteArr||[]).forEach(e=>{
+    if(!e || !e[idField]) return;
+    const ex = map[e[idField]];
+    if(!ex || (e.updatedAt||0) > (ex.updatedAt||0)) map[e[idField]] = e;
+  });
+  tomb.forEach(id=>{ delete map[id]; });
+  return Object.values(map);
+}
+
+function extractSheetId(input){
+  if(!input) return null;
+  input = input.trim();
+  const m = input.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+  if(m) return m[1];
+  if(/^[a-zA-Z0-9_-]{20,}$/.test(input)) return input;
+  return null;
+}
+
+function saveSheetLink(){
+  const raw = document.getElementById('settings-sheet-link').value;
+  const id = extractSheetId(raw);
+  if(!id){ toast("Couldn't read that sheet link"); return; }
+  const changed = id !== S.settings.sheetId;
+  S.settings.sheetId = id;
+  if(changed) S.settings.sheetTabsReady = false;
+  saveState();
+  toast('✅ Sheet link saved');
+}
+
+function handleSyncClick(){
+  saveSheetLink();
+  if(!S.settings.sheetId) return;
+  if(driveAccessToken || driveRefreshToken){ fullSync(); }
+  else { initGoogleAuth(); }
+}
+
+function disconnectSync(){
+  driveAccessToken = null; driveRefreshToken = null; driveTokenExpiry = 0;
+  localStorage.removeItem(DRIVE_TOKEN_KEY); localStorage.removeItem(DRIVE_REFRESH_KEY); localStorage.removeItem(DRIVE_EXPIRY_KEY);
+  updateSyncUI('idle');
+  toast('Disconnected — your Sheet link and local data are untouched');
+}
+
+function updateSyncUI(state){
+  syncState = state;
+  const dot = document.getElementById('sync-dot');
+  const label = document.getElementById('sync-label');
+  if(!dot || !label) return;
+  dot.classList.remove('synced','syncing','err');
+  if(state==='syncing'){ dot.classList.add('syncing'); label.textContent = 'Syncing…'; }
+  else if(state==='synced'){ dot.classList.add('synced'); label.textContent = 'Synced '+new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}); }
+  else if(state==='error'){ dot.classList.add('err'); label.textContent = 'Sync error — tap Connect & sync to retry'; }
+  else { label.textContent = (driveAccessToken||driveRefreshToken) ? 'Connected — not yet synced' : 'Not connected'; }
+}
+
+function initGoogleAuth(){
+  if(typeof google === 'undefined'){ toast('Google sign-in still loading — try again in a moment'); return; }
+  google.accounts.oauth2.initCodeClient({
+    client_id: GOOGLE_CLIENT_ID,
+    scope: SHEETS_SCOPE,
+    ux_mode: 'popup',
+    access_type: 'offline',
+    prompt: 'consent',
+    callback: async (response) => {
+      if(response.error){ console.error('Auth error:', response.error); updateSyncUI('error'); return; }
+      try{
+        const tokens = await exchangeCodeForTokens(response.code);
+        applyNewTokens(tokens);
+        if(S.settings.sheetId){ await fullSync(); }
+        else { updateSyncUI('idle'); toast('✅ Google connected — paste your Sheet link above'); }
+      }catch(e){
+        console.error('Connect failed:', e);
+        updateSyncUI('error');
+        toast('⚠️ Google connect failed: '+e.message);
+      }
+    }
+  }).requestCode();
+}
+
+async function exchangeCodeForTokens(code){
+  let resp;
+  try{
+    resp = await fetch(DRIVE_AUTH_WORKER+'/exchange', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({code})
+    });
+  }catch(networkErr){
+    throw new Error('exchange-network-failed: '+networkErr.message);
+  }
+  if(!resp.ok){
+    let detail='';
+    try{ const body=await resp.json(); detail=body.error||JSON.stringify(body); }catch(e){ detail='(no JSON body)'; }
+    throw new Error('exchange-failed ('+resp.status+'): '+detail);
+  }
+  return resp.json(); // {access_token, refresh_token, expires_in}
+}
+
+function applyNewTokens(tokens){
+  driveAccessToken = tokens.access_token;
+  driveTokenExpiry = Date.now() + (tokens.expires_in*1000) - 60000; // 1min safety margin
+  localStorage.setItem(DRIVE_TOKEN_KEY, driveAccessToken);
+  localStorage.setItem(DRIVE_EXPIRY_KEY, String(driveTokenExpiry));
+  if(tokens.refresh_token){
+    driveRefreshToken = tokens.refresh_token;
+    localStorage.setItem(DRIVE_REFRESH_KEY, driveRefreshToken);
+  }
+  localStorage.setItem(DRIVE_LINKED_KEY, '1');
+}
+
+// Silently trades the refresh token for a new access token — no popup, no user interaction.
+async function refreshAccessToken(){
+  if(!driveRefreshToken) throw new Error('no-refresh-token');
+  const resp = await fetch(DRIVE_AUTH_WORKER+'/refresh', {
+    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({refresh_token: driveRefreshToken})
+  });
+  if(!resp.ok) throw new Error('refresh-token-dead');
+  const data = await resp.json();
+  driveAccessToken = data.access_token;
+  driveTokenExpiry = Date.now() + (data.expires_in*1000) - 60000;
+  localStorage.setItem(DRIVE_TOKEN_KEY, driveAccessToken);
+  localStorage.setItem(DRIVE_EXPIRY_KEY, String(driveTokenExpiry));
+  return driveAccessToken;
+}
+
+async function ensureDriveToken(){
+  if(driveAccessToken && Date.now() < driveTokenExpiry) return driveAccessToken;
+  return refreshAccessToken();
+}
+
+async function driveApiFetch(url, options={}, attempt=0){
+  await ensureDriveToken();
+  const headers = Object.assign({}, options.headers, {'Authorization':'Bearer '+driveAccessToken});
+  const resp = await fetch(url, Object.assign({}, options, {headers}));
+  if((resp.status===401 || resp.status===403) && attempt < 2){
+    await refreshAccessToken();
+    return driveApiFetch(url, options, attempt+1);
+  }
+  return resp;
+}
+
+function handleDriveAuthFailure(){
+  driveAccessToken = null; driveRefreshToken = null;
+  localStorage.removeItem(DRIVE_TOKEN_KEY); localStorage.removeItem(DRIVE_REFRESH_KEY); localStorage.removeItem(DRIVE_EXPIRY_KEY);
+  updateSyncUI('idle');
+}
+
+function scheduleSync(){
+  if(!S.settings.sheetId || !(driveAccessToken||driveRefreshToken)) return;
+  clearTimeout(syncDebounceTimer);
+  syncDebounceTimer = setTimeout(()=>{ fullSync(); }, 1500);
+}
+
+async function ensureTabs(){
+  const res = await driveApiFetch(`https://sheets.googleapis.com/v4/spreadsheets/${S.settings.sheetId}?fields=sheets.properties.title`);
+  if(!res.ok) throw new Error('sheet-access-failed: '+res.status);
+  const data = await res.json();
+  const existing = (data.sheets||[]).map(s=>s.properties.title);
+  const needed = ['Recipes','ShoppingList','Meta'].filter(t=>!existing.includes(t));
+  if(needed.length){
+    const bu = await driveApiFetch(`https://sheets.googleapis.com/v4/spreadsheets/${S.settings.sheetId}:batchUpdate`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({requests: needed.map(title=>({addSheet:{properties:{title}}}))})
+    });
+    if(!bu.ok) throw new Error('sheet-tab-create-failed: '+bu.status);
+  }
+}
+
+function recipeToRow(r){
+  return [r.id, r.name||'', r.servings||'', r.source||'', (r.protein||[]).join('|'), (r.meal||[]).join('|'), (r.season||[]).join('|'), (r.style||[]).join('|'), (r.allergens||[]).join('|'), JSON.stringify(r.ingredients||[]), r.steps||'', r.notes||'', String(r.updatedAt||0), String(r.createdAt||0)];
+}
+function rowToRecipe(row){
+  let ingredients=[]; try{ ingredients=JSON.parse(row[9]||'[]'); }catch(e){ ingredients=[]; }
+  return {
+    id:row[0], name:row[1]||'', servings:row[2]||'', source:row[3]||'',
+    protein:(row[4]||'').split('|').filter(Boolean), meal:(row[5]||'').split('|').filter(Boolean),
+    season:(row[6]||'').split('|').filter(Boolean), style:(row[7]||'').split('|').filter(Boolean),
+    allergens:(row[8]||'').split('|').filter(Boolean), ingredients, steps:row[10]||'', notes:row[11]||'',
+    updatedAt:Number(row[12])||0, createdAt:Number(row[13])||0
+  };
+}
+function groceryToRow(it){
+  return [it.key, it.name||'', it.qty||'', it.unit||'', it.category||'', it.fromRecipe?'1':'0', JSON.stringify(it.sources||[]), it.checked?'1':'0', String(it.updatedAt||0)];
+}
+function rowToGrocery(row){
+  let sources=[]; try{ sources=JSON.parse(row[6]||'[]'); }catch(e){ sources=[]; }
+  return {key:row[0], name:row[1]||'', qty:row[2]||'', unit:row[3]||'', category:row[4]||'', fromRecipe:row[5]==='1', sources, checked:row[7]==='1', updatedAt:Number(row[8])||0};
+}
+
+async function pullFromSheet(){
+  const ranges = ['Recipes!A1:N5000','ShoppingList!A1:J5000','Meta!A1:B20'].map(r=>'ranges='+encodeURIComponent(r)).join('&');
+  const res = await driveApiFetch(`https://sheets.googleapis.com/v4/spreadsheets/${S.settings.sheetId}/values:batchGet?${ranges}`);
+  if(!res.ok) throw new Error('sheet-fetch-failed: '+res.status);
+  const data = await res.json();
+  const [recipesRange, groceryRange, metaRange] = data.valueRanges||[];
+  const recipeRows = ((recipesRange&&recipesRange.values)||[]).slice(1);
+  const groceryRows = ((groceryRange&&groceryRange.values)||[]).slice(1);
+  const metaRows = (metaRange&&metaRange.values)||[];
+  const metaMap = {};
+  metaRows.forEach(r=>{ if(r && r[0]) metaMap[r[0]] = r[1]; });
+
+  if(metaMap.tombstones){
+    try{
+      const remoteTomb = JSON.parse(metaMap.tombstones)||[];
+      const seen = new Set((S.tombstones||[]).map(t=>t.type+'|'+t.id));
+      remoteTomb.forEach(t=>{ if(t && !seen.has(t.type+'|'+t.id)){ S.tombstones.push(t); seen.add(t.type+'|'+t.id); } });
+    }catch(e){}
+  }
+
+  const remoteRecipes = recipeRows.filter(r=>r&&r[0]).map(rowToRecipe);
+  const remoteGrocery = groceryRows.filter(r=>r&&r[0]).map(rowToGrocery);
+  S.recipes = mergeById(S.recipes, remoteRecipes, 'recipe');
+  S.grocery.items = mergeById(S.grocery.items, remoteGrocery, 'grocery', 'key');
+
+  const remoteThisWeekUpdatedAt = Number(metaMap.thisWeekUpdatedAt)||0;
+  if(remoteThisWeekUpdatedAt > (S.thisWeekUpdatedAt||0)){
+    try{ S.thisWeek = JSON.parse(metaMap.thisWeek)||[]; S.thisWeekUpdatedAt = remoteThisWeekUpdatedAt; }catch(e){}
+  }
+
+  try{ localStorage.setItem(STORE_KEY, JSON.stringify(S)); }catch(e){}
+}
+
+async function pushToSheet(){
+  const recipeRows = [RECIPE_HEADERS, ...S.recipes.map(recipeToRow)];
+  const groceryRows = [GROCERY_HEADERS, ...S.grocery.items.map(groceryToRow)];
+  const metaRows = [['key','value'],
+    ['thisWeek', JSON.stringify(S.thisWeek||[])],
+    ['thisWeekUpdatedAt', String(S.thisWeekUpdatedAt||0)],
+    ['tombstones', JSON.stringify(S.tombstones||[])]
+  ];
+  const clearRes = await driveApiFetch(`https://sheets.googleapis.com/v4/spreadsheets/${S.settings.sheetId}/values:batchClear`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ranges:['Recipes!A1:N5000','ShoppingList!A1:J5000','Meta!A1:B20']})
+  });
+  if(!clearRes.ok) throw new Error('sheet-clear-failed: '+clearRes.status);
+  const res = await driveApiFetch(`https://sheets.googleapis.com/v4/spreadsheets/${S.settings.sheetId}/values:batchUpdate`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({
+      valueInputOption:'RAW',
+      data:[
+        {range:'Recipes!A1:N'+recipeRows.length, values:recipeRows},
+        {range:'ShoppingList!A1:J'+groceryRows.length, values:groceryRows},
+        {range:'Meta!A1:B'+metaRows.length, values:metaRows}
+      ]
+    })
+  });
+  if(!res.ok) throw new Error('sheet-push-failed: '+res.status);
+}
+
+async function fullSync(){
+  if(!S.settings.sheetId){ toast('Paste your Google Sheet link in Settings first'); return; }
+  if(!driveRefreshToken && !driveAccessToken){ initGoogleAuth(); return; }
+  updateSyncUI('syncing');
+  try{
+    if(!S.settings.sheetTabsReady){ await ensureTabs(); S.settings.sheetTabsReady = true; try{ localStorage.setItem(STORE_KEY, JSON.stringify(S)); }catch(e){} }
+    await pullFromSheet();
+    await pushToSheet();
+    updateSyncUI('synced');
+    renderFilters(); renderRecipeList(); renderWeek(); renderGrocery();
+  }catch(e){
+    console.error('Full sync failed:', e);
+    if(e.message==='refresh-token-dead' || e.message==='no-refresh-token') handleDriveAuthFailure();
+    else updateSyncUI('error');
+  }
+}
+
+document.addEventListener('visibilitychange', () => {
+  if(document.visibilityState==='visible' && S.settings.sheetId && (driveAccessToken||driveRefreshToken)) fullSync();
+});
+
 // ─── INIT ───────────────────────────────────────────────────────────────────
 function init(){
   renderFilters();
   renderRecipeList();
   renderSettings();
+  if(S.settings.sheetId && (driveAccessToken||driveRefreshToken)) fullSync();
 }
 init();
 </script>
