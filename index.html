@@ -681,6 +681,31 @@ function guessCategory(name){
   }
   return 'Other';
 }
+// Imported ingredients arrive in two different shapes depending on where they came from:
+// the AI-extraction path returns {name,qty,unit} objects (it's instructed to), but a direct
+// JSON-LD page read (no AI call needed) returns plain ingredient-line strings like
+// "500g salmon fillet, skin off" straight off the page's own markup. Reading i.name off a
+// plain string is undefined, so every row came through blank — this normalizes both shapes
+// into the same {name,qty,unit,category} object the ingredient editor expects, and for a
+// string it makes a best-effort attempt to split off a leading qty+unit. If that doesn't
+// confidently match, the FULL original line is kept as the name rather than ever dropping
+// it — a slightly-wrong qty/unit split is a visible, easy-to-fix-by-hand annoyance; losing
+// the ingredient text entirely is the actual bug this exists to prevent.
+const UNIT_WORD_MAP = {cups:'cup',tablespoons:'tbsp',tablespoon:'tbsp',teaspoons:'tsp',teaspoon:'tsp',cloves:'clove',pieces:'piece',tins:'tin',packets:'pkt',packet:'pkt',l:'L'};
+function normalizeImportedIngredient(i){
+  if(typeof i === 'string'){
+    const s = i.trim();
+    const m = s.match(/^([\d½¼¾⅓⅔.\/\s-]+)\s*(g|kg|ml|l|cup|cups|tbsp|tsp|tablespoons?|teaspoons?|clove|cloves|piece|pieces|tin|tins|pkt|packets?)?\b\s*(.*)$/i);
+    if(m && m[1] && m[1].trim()){
+      const unitRaw = (m[2]||'').toLowerCase();
+      const unit = UNIT_WORD_MAP[unitRaw] || unitRaw;
+      const rest = (m[3]||'').trim();
+      return {name: rest || s, qty: m[1].trim(), unit: UNITS.includes(unit) ? unit : '', category: guessCategory(rest || s)};
+    }
+    return {name:s, qty:'', unit:'', category:guessCategory(s)};
+  }
+  return {name:i.name||'', qty:i.qty||'', unit:i.unit||'', category:guessCategory(i.name||'')};
+}
 
 function saveRecipe(){
   const name = document.getElementById('re-name').value.trim();
@@ -1061,7 +1086,7 @@ function applyImportedRecipe(data){
   const ingWrap = document.getElementById('re-ingredients');
   ingWrap.innerHTML = '';
   const rawIngs = (data.ingredients && data.ingredients.length) ? data.ingredients : [{name:'',qty:'',unit:''}];
-  const ings = rawIngs.map(i=>({name:i.name||'', qty:i.qty||'', unit:i.unit||'', category:guessCategory(i.name||'')}));
+  const ings = rawIngs.map(normalizeImportedIngredient);
   ings.forEach(ing=>addIngredientRow(ing));
 
   editorTags.protein = (data.suggestedProtein||[]).filter(v=>PROTEIN.includes(v));
