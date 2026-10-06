@@ -331,8 +331,12 @@ input:checked + .slider:before{transform:translateX(18px);}
       </div>
       <div class="btn-row">
         <button class="btn btn-secondary" onclick="saveSettings(); toast('✅ Saved')">Save</button>
-        <button class="btn btn-secondary" onclick="testAiConnection()">🔌 Test connection</button>
+        <button class="btn btn-secondary" onclick="testAiConnection()">🔌 Test AI worker</button>
       </div>
+      <div class="btn-row" style="margin-top:8px;">
+        <button class="btn btn-secondary" onclick="testFetchConnection()">🔌 Test fetch worker</button>
+      </div>
+      <div class="muted" style="margin-top:6px;">These two test separately because they're two different Cloudflare Workers — passing one doesn't confirm the other.</div>
     </div>
     <div class="card">
       <div class="card-title">💾 Backup</div>
@@ -931,6 +935,30 @@ async function testAiConnection(){
     const raw = await callAI('Reply with only the single word: OK', 20);
     if(raw.trim().toUpperCase().includes('OK')) toast('✅ AI worker responding correctly');
     else toast('⚠️ Got an odd response: '+raw.slice(0,60));
+  }catch(e){
+    toast('⚠️ Connection failed: '+e.message);
+  }
+}
+// Separate from testAiConnection() on purpose — the Recipe Fetch Worker is a different
+// Cloudflare Worker with its own APP_SHARED_KEY secret, so a passing AI test says nothing
+// about whether this one's key actually matches. Posts a harmless URL (no recipe markup,
+// so a 200 with found:false is the expected "working" result) just to isolate the auth
+// check from whatever recipetineats.com/etc. itself does.
+async function testFetchConnection(){
+  if(!S.settings.fetchUrl){ toast('Fill in the Recipe Fetch Worker URL first'); return; }
+  if(!S.settings.aiKey){ toast('Fill in the Shared key first'); return; }
+  toast('Testing…');
+  try{
+    const resp = await fetch(S.settings.fetchUrl, {
+      method:'POST',
+      headers:{'Content-Type':'application/json','X-App-Key':S.settings.aiKey},
+      body: JSON.stringify({url:'https://example.com'})
+    });
+    if(resp.status===401){ toast("⚠️ Unauthorized — the Shared key doesn't match this worker's APP_SHARED_KEY secret"); return; }
+    if(!resp.ok){ toast('⚠️ Worker error (HTTP '+resp.status+')'); return; }
+    const data = await resp.json();
+    if(data.error){ toast('⚠️ '+data.error); return; }
+    toast('✅ Recipe Fetch Worker responding correctly');
   }catch(e){
     toast('⚠️ Connection failed: '+e.message);
   }
