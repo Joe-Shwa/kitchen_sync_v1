@@ -1017,13 +1017,14 @@ function setImportStatus(msg){
 // empty rather than erroring. Used to turn that into a visible error instead of
 // quietly opening a blank editor and leaving it to look like a "successful" import.
 function recipeLooksEmpty(data){
-  const hasName = !!(data && data.name && String(data.name).trim());
   const hasIngredients = !!(data && Array.isArray(data.ingredients) && data.ingredients.some(i=>{
     if(typeof i === 'string') return i.trim();
     return i && i.name && String(i.name).trim();
   }));
   const hasSteps = !!(data && data.steps && String(data.steps).trim());
-  return !hasName && !hasIngredients && !hasSteps;
+  // A title with no ingredients and no method isn't a useful import either — the whole
+  // point of importing is skipping retyping those by hand, so require at least one.
+  return !hasIngredients && !hasSteps;
 }
 
 async function importFromUrl(){
