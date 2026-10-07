@@ -1012,6 +1012,20 @@ function setImportStatus(msg){
   else el.classList.add('hidden');
 }
 
+// True when an imported/extracted recipe has nothing usable in it (no title, no
+// ingredients with an actual name, no method) — i.e. extraction silently came back
+// empty rather than erroring. Used to turn that into a visible error instead of
+// quietly opening a blank editor and leaving it to look like a "successful" import.
+function recipeLooksEmpty(data){
+  const hasName = !!(data && data.name && String(data.name).trim());
+  const hasIngredients = !!(data && Array.isArray(data.ingredients) && data.ingredients.some(i=>{
+    if(typeof i === 'string') return i.trim();
+    return i && i.name && String(i.name).trim();
+  }));
+  const hasSteps = !!(data && data.steps && String(data.steps).trim());
+  return !hasName && !hasIngredients && !hasSteps;
+}
+
 async function importFromUrl(){
   const url = document.getElementById('import-url').value.trim();
   if(!url){ toast('Paste a link first'); return; }
@@ -1026,16 +1040,19 @@ async function importFromUrl(){
     const data = await resp.json();
     if(data.error) throw new Error(data.error);
     if(data.found){
-      applyImportedRecipe({
+      const recipe = {
         name:data.recipe.name, servings:data.recipe.servings, source:data.recipe.source||guessSourceFromUrl(url),
         ingredients:data.recipe.ingredients||[], steps:data.recipe.steps,
         suggestedProtein:[], suggestedMeal:[], suggestedSeason:[], suggestedStyle:[]
-      });
+      };
+      if(recipeLooksEmpty(recipe)) throw new Error("Found a recipe block on that page but couldn't read anything useful out of it — try Import → Paste text instead, or enter it manually.");
+      applyImportedRecipe(recipe);
     } else {
       if(!aiConfigured()){ toast("Couldn't read that page directly, and AI extraction isn't set up — add your AI Worker in Settings"); setImportStatus(null); return; }
       setImportStatus('No recipe markup found — asking Claude to read it instead…');
       const parsed = await extractRecipeFromText(data.text);
       parsed.source = parsed.source || guessSourceFromUrl(url);
+      if(recipeLooksEmpty(parsed)) throw new Error("Couldn't find a recipe in that page's text — try Import → Paste text instead (copy the recipe section directly), or enter it manually.");
       applyImportedRecipe(parsed);
     }
   }catch(e){
@@ -1049,7 +1066,9 @@ async function importFromText(){
   if(!aiConfigured()){ toast('Add your AI Worker URL + key in Settings first'); return; }
   setImportStatus('Reading…');
   try{
-    applyImportedRecipe(await extractRecipeFromText(text));
+    const parsed = await extractRecipeFromText(text);
+    if(recipeLooksEmpty(parsed)) throw new Error("Couldn't find a recipe in that text — double-check it includes ingredients and method, or enter it manually.");
+    applyImportedRecipe(parsed);
   }catch(e){
     toast('⚠️ Could not extract a recipe: '+e.message);
     setImportStatus(null);
@@ -1063,7 +1082,9 @@ function importFromPhoto(ev){
     setImportStatus('Reading photo…');
     try{
       const base64 = reader.result.split(',')[1];
-      applyImportedRecipe(await extractRecipeFromImage(base64, file.type));
+      const parsed = await extractRecipeFromImage(base64, file.type);
+      if(recipeLooksEmpty(parsed)) throw new Error("Couldn't find a recipe in that photo — try a clearer shot, or enter it manually.");
+      applyImportedRecipe(parsed);
     }catch(e){
       toast('⚠️ Could not read that photo: '+e.message);
       setImportStatus(null);
